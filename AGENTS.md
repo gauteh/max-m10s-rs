@@ -25,7 +25,10 @@ Use the repository:
 The example device (example-sfy project) uses the artemis ble module (not the
 redboard-nano). The GPS is connected to the artemis ble module as follows:
 
+use 100kHz baud rate.
+
 * pad d25 connected to gps sda
 * pad d27 connected to gps scl
 * pad ad11 connected to gps ts
-* pad d38 connected to gps V_IO and VCC, to power the device on.
+* pad d38 connected to gps V_IO and VCC, to power the device on. pin LOW means
+    power on.

@@ -35,12 +35,21 @@ fn main() -> ! {
     let mut led = pins.d19.into_push_pull_output();
 
     // Power on the GPS module via d8 (Apollo3 pad 38).
+    defmt::info!("enabling gps_pwr");
     let mut gps_pwr = pins.d8.into_push_pull_output();
-    gps_pwr.set_high().unwrap();
-    delay.delay_ms(100u32);
+    gps_pwr.set_low().unwrap();
+    delay.delay_ms(2000u32);
 
+    defmt::info!("setting up i2c");
     // I2C on IOM2: SDA = d17 (pad 25), SCL = d18 (pad 27).
-    let mut i2c = Iom2::new(dp.IOM2, pins.d17, pins.d18, Freq::F400kHz);
+    let mut i2c = Iom2::new(dp.IOM2, pins.d17, pins.d18, Freq::F100kHz);
+
+    loop {
+        defmt::info!("checking if device responds..");
+        let r = i2c.ping(0x42);
+        defmt::info!("response: {}", r);
+        delay.delay_ms(2000_u32);
+    }
 
     defmt::info!("Initialising MAX-M10S…");
     let mut gnss = loop {
@@ -48,7 +57,7 @@ fn main() -> ! {
             Ok(dev) => break dev,
             Err(_) => {
                 defmt::warn!("device not found — retrying");
-                delay.delay_ms(500u32);
+                delay.delay_ms(2000_u32);
             }
         }
     };
