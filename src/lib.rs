@@ -43,8 +43,8 @@ const REG_BYTES_AVAIL: u8 = 0xFD;
 /// Maximum bytes per I2C read transaction (matches u-blox recommended chunk size).
 const CHUNK: usize = 32;
 
-/// Internal receive buffer — large enough to hold several UBX packets.
-const RX_BUF: usize = 256;
+/// Internal receive buffer — matches the u-blox DDC FIFO size (512 bytes).
+const RX_BUF: usize = 512;
 
 /// Driver error type.
 #[derive(Debug)]
@@ -180,7 +180,6 @@ impl MaxM10S {
     {
         let mut rx = [0u8; RX_BUF];
         let n = self.drain(i2c, &mut rx)?;
-        defmt::debug!("rx buf: {:x} [{}]", rx, n);
         Ok(parse_nav_pvt(&rx[..n]))
     }
 
@@ -190,8 +189,9 @@ impl MaxM10S {
 
     /// Read all bytes currently available from the device into `buf`.
     ///
-    /// Checks registers 0xFD/0xFE for the byte count, then reads in 32-byte
-    /// chunks from the data stream at 0xFF. Returns the number of bytes stored.
+    /// Reads the byte count from registers 0xFD/0xFE, then explicitly points to
+    /// register 0xFF (data stream) and reads in 32-byte chunks.
+    /// Returns the number of bytes stored.
     fn drain<I2C, E>(&mut self, i2c: &mut I2C, buf: &mut [u8]) -> Result<usize, Error<E>>
     where
         I2C: Read<Error = E> + WriteRead<Error = E>,
@@ -205,6 +205,11 @@ impl MaxM10S {
         }
         let to_read = avail.min(buf.len());
         let mut pos = 0;
+        // First chunk: use write_read to explicitly set pointer to 0xFF (data stream).
+        let first_chunk = to_read.min(CHUNK);
+        i2c.write_read(self.address, &[0xFF], &mut buf[..first_chunk])?;
+        pos += first_chunk;
+        // Remaining chunks: pointer auto-advances within the FIFO.
         while pos < to_read {
             let chunk = (to_read - pos).min(CHUNK);
             i2c.read(self.address, &mut buf[pos..pos + chunk])?;
