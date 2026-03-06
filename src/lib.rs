@@ -180,6 +180,7 @@ impl MaxM10S {
     {
         let mut rx = [0u8; RX_BUF];
         let n = self.drain(i2c, &mut rx)?;
+        defmt::debug!("rx buf: {:x} [{}]", rx, n);
         Ok(parse_nav_pvt(&rx[..n]))
     }
 
