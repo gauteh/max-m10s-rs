@@ -3,7 +3,7 @@
 //! Wiring (Apollo3 pad numbers, using sparkfun-redboard-nano BSP pin names):
 //!   MAX-M10S SDA → d17 (Apollo3 pad 25, IOM2 SDA)
 //!   MAX-M10S SCL → d18 (Apollo3 pad 27, IOM2 SCL)
-//!   MAX-M10S VCC → d8  (Apollo3 pad 38, GPIO power enable)
+//!   MAX-M10S VCC → d8  (Apollo3 pad 38, GPIO power enable, LOW = on)
 //!   MAX-M10S GND → GND
 //!
 //! Flash and view RTT output with probe-rs:
@@ -43,13 +43,6 @@ fn main() -> ! {
     defmt::info!("setting up i2c");
     // I2C on IOM2: SDA = d17 (pad 25), SCL = d18 (pad 27).
     let mut i2c = Iom2::new(dp.IOM2, pins.d17, pins.d18, Freq::F100kHz);
-
-    loop {
-        defmt::info!("checking if device responds..");
-        let r = i2c.ping(0x42);
-        defmt::info!("response: {}", r);
-        delay.delay_ms(2000_u32);
-    }
 
     defmt::info!("Initialising MAX-M10S…");
     let mut gnss = loop {
