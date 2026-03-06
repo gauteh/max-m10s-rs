@@ -13,12 +13,6 @@ cortex-m-rt = "0.7"
 panic-probe = { version = "0.3", features = ["print-defmt"] }
 defmt = "0.3"
 defmt-rtt = "0.4"
-nb = "1"
-
-# embedded-hal 0.2 for the BlockingUart adapter (ambiq-hal speaks 0.2)
-embedded-hal = "0.2"
-# embedded-io 0.6 to satisfy the max-m10s library
-embedded-io = "0.6"
 
 [dependencies.ambiq-hal]
 git = "https://github.com/gauteh/ambiq-rs"

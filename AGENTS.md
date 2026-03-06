@@ -7,9 +7,25 @@
 
 Use the Arduino library in https://github.com/sparkfun/SparkFun_u-blox_GNSS_Arduino_Library as a starting point to port the driver to rust.
 
+Use the repository:
+ "https://github.com/gauteh/ism330dhcx" branch "gyro-accel-parse-range" as an
+ example for how to write the driver. but this is not a strict requirement.
+
+ Prefer the embedded-hal version supported by ambiq-rs currently.
+
 ## Constraints
 
 * Only support the MAX-M10-S at first.
-* Only support booting or setting up the device, configuring output rate,
-    configuring PPS rate, and changing to UART output, putting the device to
+* Use I2C
+* Only support booting or setting up the device, configuring output rate, configuring PPS rate, putting the device to
     sleep and resuming.
+
+## Wiring
+
+The example device (example-sfy project) uses the artemis ble module (not the
+redboard-nano). The GPS is connected to the artemis ble module as follows:
+
+* pad d25 connected to gps sda
+* pad d27 connected to gps scl
+* pad ad11 connected to gps ts
+* pad d38 connected to gps V_IO and VCC, to power the device on.

@@ -6,21 +6,18 @@ authors = []
 description = "Embedded driver for the u-blox MAX-M10S GNSS module"
 repository = "https://github.com/gauteh/max-m10s-rs"
 license = "MIT"
-keywords = ["gnss", "gps", "uart", "embedded-hal-driver", "max-m10s"]
+keywords = ["gnss", "gps", "i2c", "embedded-hal-driver", "max-m10s"]
 categories = ["embedded", "hardware-support", "no-std"]
 readme = "README.md"
 include = ["src/", "LICENSE", "README.md"]
 
 [dependencies]
-defmt = { version = "1.0", optional = true }
-embedded-hal = "1.0.0"
-embedded-hal-nb = "1.0.0"
-embedded-io = "0.6"
-heapless = "0.8"
+defmt = { version = "0.3", optional = true }
+embedded-hal = "0.2"
 
 [features]
 default = []
 defmt = ["dep:defmt"]
 
 [dev-dependencies]
-embedded-hal-mock = "0.11"
+embedded-hal-mock = "0.10"

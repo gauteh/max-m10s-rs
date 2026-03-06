@@ -1,244 +1,238 @@
+#![no_std]
+#![deny(missing_docs)]
 //! Embedded driver for the u-blox MAX-M10S GNSS module.
 //!
-//! # Overview
+//! Uses the `embedded-hal` 0.2 blocking I2C interface. The struct does not own
+//! the I2C bus — each method accepts a `&mut I2C` reference so the bus can be
+//! shared with other devices.
 //!
-//! This crate provides a `no_std` driver for the u-blox MAX-M10S GNSS module,
-//! targeting embedded platforms using [`embedded-hal`] v1 and [`embedded-io`].
+//! # Example
 //!
-//! Communication is performed over UART using the UBX binary protocol.
-//!
-//! # Supported features
-//!
-//! - Device initialisation / boot
-//! - Configure NMEA/UBX output message rate
-//! - Configure PPS (timepulse) rate
-//! - Switch to UART-only output
-//! - Put device to sleep (power save mode)
-//! - Resume device from sleep
-//!
-//! # Quick start
-//!
-//! ```rust,ignore
+//! ```no_run
 //! use max_m10s::MaxM10S;
-//!
-//! let mut gnss = MaxM10S::new(uart);
-//! gnss.init().unwrap();
-//! gnss.set_output_rate(1).unwrap(); // 1 Hz
+//! // i2c implements embedded_hal 0.2 blocking I2C traits
+//! # fn run<I2C, E: core::fmt::Debug>(mut i2c: I2C)
+//! # where
+//! #   I2C: embedded_hal::blocking::i2c::Write<Error=E>
+//! #      + embedded_hal::blocking::i2c::Read<Error=E>
+//! #      + embedded_hal::blocking::i2c::WriteRead<Error=E>
+//! # {
+//! let mut gnss = MaxM10S::new(&mut i2c).unwrap();
+//! gnss.set_output_rate(&mut i2c, 1).unwrap();
+//! gnss.enable_pvt(&mut i2c).unwrap();
+//! # }
 //! ```
-//!
-//! # References
-//!
-//! - [MAX-M10S product page](https://www.u-blox.com/en/product/max-m10-series)
-//! - [u-blox M10 receiver interface description](https://www.u-blox.com/sites/default/files/documents/u-blox-M10_ReceiverDescription_UBX-21035062.pdf)
-
-#![cfg_attr(not(test), no_std)]
-#![deny(missing_docs)]
 
 pub mod ubx;
 
-use embedded_io::{Read, Write};
-use ubx::{CfgMsg, CfgPm2, CfgRate, CfgTp5, NavPvt, encode_ubx, parse_ubx_response};
+use ubx::{
+    encode_ubx, parse_nav_pvt, parse_ubx_response, CfgMsg, CfgRate, CfgTp5, RxmPmReq,
+    NavPvt, ParseError, CLASS_CFG, CLASS_MON, CLASS_NAV,
+    ID_CFG_RATE, ID_CFG_TP5, ID_CFG_MSG, ID_MON_VER, ID_NAV_PVT,
+};
 
-/// Errors returned by this driver.
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+use embedded_hal::blocking::i2c::{Read, Write, WriteRead};
+
+/// Default I2C address for the u-blox MAX-M10S.
+pub const ADDR: u8 = 0x42;
+
+/// I2C register for the bytes-available counter (MSB; LSB follows at 0xFE).
+/// After reading both registers the internal pointer advances to 0xFF (data stream).
+const REG_BYTES_AVAIL: u8 = 0xFD;
+
+/// Maximum bytes per I2C read transaction (matches u-blox recommended chunk size).
+const CHUNK: usize = 32;
+
+/// Internal receive buffer — large enough to hold several UBX packets.
+const RX_BUF: usize = 256;
+
+/// Driver error type.
+#[derive(Debug)]
 pub enum Error<E> {
-    /// Underlying I/O error.
-    Io(E),
-    /// A UBX acknowledgement was not received.
-    NoAck,
-    /// Response checksum mismatch.
-    ChecksumError,
-    /// Received an unexpected or malformed packet.
-    InvalidResponse,
+    /// Underlying I2C bus error.
+    I2c(E),
+    /// No device found at the expected I2C address.
+    NoDevice,
+    /// The device replied with ACK-NAK (command rejected).
+    Nak,
+    /// Timed out waiting for an ACK or response.
+    Timeout,
 }
 
 impl<E> From<E> for Error<E> {
     fn from(e: E) -> Self {
-        Error::Io(e)
+        Error::I2c(e)
     }
 }
 
-/// Driver for the u-blox MAX-M10S GNSS module.
-pub struct MaxM10S<UART> {
-    uart: UART,
+/// Driver for the u-blox MAX-M10S GNSS module over I2C (DDC interface).
+pub struct MaxM10S {
+    address: u8,
 }
 
-impl<UART, E> MaxM10S<UART>
-where
-    UART: Read<Error = E> + Write<Error = E>,
-{
-    /// Create a new driver instance, taking ownership of the UART peripheral.
-    pub fn new(uart: UART) -> Self {
-        Self { uart }
+impl MaxM10S {
+    /// Probe the I2C bus for the device and return a driver instance.
+    ///
+    /// Returns `Err(Error::NoDevice)` if the device does not ACK its address.
+    pub fn new<I2C, E>(i2c: &mut I2C) -> Result<Self, Error<E>>
+    where
+        I2C: Write<Error = E>,
+    {
+        i2c.write(ADDR, &[]).map_err(|_| Error::NoDevice)?;
+        Ok(Self { address: ADDR })
     }
 
-    /// Consume the driver and return the inner UART.
-    pub fn release(self) -> UART {
-        self.uart
+    /// Verify communication by polling MON-VER and waiting for a response.
+    pub fn init<I2C, E>(&mut self, i2c: &mut I2C) -> Result<(), Error<E>>
+    where
+        I2C: Write<Error = E> + Read<Error = E> + WriteRead<Error = E>,
+    {
+        let mut buf = [0u8; 8];
+        let n = encode_ubx(CLASS_MON, ID_MON_VER, &[], &mut buf);
+        i2c.write(self.address, &buf[..n])?;
+        self.wait_ack(i2c, CLASS_MON, ID_MON_VER)
     }
 
-    /// Initialise the device: disable NMEA on UART, enable UBX protocol, and
-    /// verify communication by polling the receiver version.
-    pub fn init(&mut self) -> Result<(), Error<E>> {
-        // Disable all default NMEA messages on UART1 to reduce noise.
-        self.disable_nmea()?;
-        // Confirm UBX comms are working.
-        self.poll_version()?;
+    /// Set the navigation measurement rate.
+    ///
+    /// `rate_hz` is clamped to 1–10 Hz.
+    pub fn set_output_rate<I2C, E>(&mut self, i2c: &mut I2C, rate_hz: u8) -> Result<(), Error<E>>
+    where
+        I2C: Write<Error = E> + Read<Error = E> + WriteRead<Error = E>,
+    {
+        let meas_rate_ms = 1000u16 / (rate_hz.max(1).min(10) as u16);
+        let rate = CfgRate { meas_rate_ms, nav_rate: 1, time_ref: 0 };
+        let mut buf = [0u8; 16];
+        let n = rate.encode(&mut buf);
+        i2c.write(self.address, &buf[..n])?;
+        self.wait_ack(i2c, CLASS_CFG, ID_CFG_RATE)
+    }
+
+    /// Configure the timepulse (PPS) output.
+    ///
+    /// `interval_us`: period in microseconds (e.g. `1_000_000` for 1 Hz).
+    /// `pulse_len_us`: pulse width in microseconds.
+    pub fn set_pps_rate<I2C, E>(
+        &mut self,
+        i2c: &mut I2C,
+        interval_us: u32,
+        pulse_len_us: u32,
+    ) -> Result<(), Error<E>>
+    where
+        I2C: Write<Error = E> + Read<Error = E> + WriteRead<Error = E>,
+    {
+        let tp5 = CfgTp5 { tp_idx: 0, interval_us, pulse_len_us, active: true };
+        let mut buf = [0u8; 48];
+        let n = tp5.encode(&mut buf);
+        i2c.write(self.address, &buf[..n])?;
+        self.wait_ack(i2c, CLASS_CFG, ID_CFG_TP5)
+    }
+
+    /// Enable `UBX-NAV-PVT` output on the I2C port at every navigation fix.
+    pub fn enable_pvt<I2C, E>(&mut self, i2c: &mut I2C) -> Result<(), Error<E>>
+    where
+        I2C: Write<Error = E> + Read<Error = E> + WriteRead<Error = E>,
+    {
+        let msg = CfgMsg { msg_class: CLASS_NAV, msg_id: ID_NAV_PVT, i2c_rate: 1 };
+        let mut buf = [0u8; 16];
+        let n = msg.encode(&mut buf);
+        i2c.write(self.address, &buf[..n])?;
+        self.wait_ack(i2c, CLASS_CFG, ID_CFG_MSG)
+    }
+
+    /// Send the device into indefinite backup sleep (`UBX-RXM-PMREQ`).
+    ///
+    /// No ACK is returned — the device enters sleep immediately. Wake it by
+    /// toggling the power control GPIO and calling [`resume`](Self::resume).
+    pub fn sleep<I2C, E>(&mut self, i2c: &mut I2C) -> Result<(), Error<E>>
+    where
+        I2C: Write<Error = E>,
+    {
+        let req = RxmPmReq::backup();
+        let mut buf = [0u8; 24];
+        let n = req.encode(&mut buf);
+        i2c.write(self.address, &buf[..n])?;
         Ok(())
     }
 
-    /// Set the navigation/output message rate in Hz (1–10).
+    /// Poll until the device ACKs an I2C write after waking from sleep.
     ///
-    /// This sends a `CFG-RATE` message with `measRate = 1000 / rate_hz` ms.
-    pub fn set_output_rate(&mut self, rate_hz: u16) -> Result<(), Error<E>> {
-        let meas_rate_ms = 1000u16 / rate_hz.max(1);
-        let payload = CfgRate {
-            meas_rate_ms,
-            nav_rate: 1,
-            time_ref: 0, // UTC
-        };
-        self.send_cfg(&payload.encode())?;
-        self.wait_ack(ubx::CLASS_CFG, ubx::ID_CFG_RATE)
-    }
-
-    /// Set the PPS (timepulse) interval in microseconds.
-    ///
-    /// Sends a `CFG-TP5` message configuring timepulse 0.
-    pub fn set_pps_rate(&mut self, interval_us: u32, pulse_len_us: u32) -> Result<(), Error<E>> {
-        let payload = CfgTp5 {
-            tp_idx: 0,
-            interval_us,
-            pulse_len_us,
-            active: true,
-        };
-        self.send_cfg(&payload.encode())?;
-        self.wait_ack(ubx::CLASS_CFG, ubx::ID_CFG_TP5)
-    }
-
-    /// Put the receiver into power-save mode (backup sleep).
-    pub fn sleep(&mut self) -> Result<(), Error<E>> {
-        let payload = CfgPm2::backup();
-        self.send_cfg(&payload.encode())?;
-        self.wait_ack(ubx::CLASS_CFG, ubx::ID_CFG_PM2)
-    }
-
-    /// Wake the receiver by sending a dummy byte and waiting for it to be ready.
-    pub fn wake(&mut self) -> Result<(), Error<E>> {
-        // Toggle UART line: send a dummy 0xFF byte to wake from backup mode.
-        self.uart.write_all(&[0xFF])?;
-        // Poll version to confirm the device is awake.
-        self.poll_version()
-    }
-
-    /// Enable `UBX-NAV-PVT` output on UART at the configured message rate.
-    ///
-    /// Call this after [`init`](Self::init) to start receiving position fixes.
-    /// Each navigation cycle will produce one NAV-PVT packet on the UART.
-    pub fn enable_pvt_output(&mut self) -> Result<(), Error<E>> {
-        let msg = CfgMsg {
-            msg_class: ubx::CLASS_NAV,
-            msg_id: ubx::ID_NAV_PVT,
-            rate: 1,
-        };
-        let pkt = msg.encode();
-        self.uart.write_all(&pkt)?;
-        self.uart.flush()?;
-        self.wait_ack(ubx::CLASS_CFG, ubx::ID_CFG_MSG)
-    }
-
-    /// Block until a valid `UBX-NAV-PVT` packet is received and return the
-    /// parsed position/velocity/time solution.
-    ///
-    /// Call [`enable_pvt_output`](Self::enable_pvt_output) once before
-    /// entering the read loop.
-    pub fn read_pvt(&mut self) -> Result<NavPvt, Error<E>> {
-        let mut buf = [0u8; 512];
-        let mut pos = 0usize;
-
-        for _ in 0..65536usize {
-            let mut byte = [0u8; 1];
-            if self.uart.read(&mut byte).map_err(Error::Io)? == 0 {
-                continue;
-            }
-            buf[pos] = byte[0];
-            pos += 1;
-
-            if let Some(pvt) = ubx::parse_nav_pvt(&buf[..pos]) {
-                return Ok(pvt);
-            }
-
-            if pos == buf.len() {
-                // Keep the second half of the buffer to avoid discarding a
-                // partially-received packet that straddles the boundary.
-                buf.copy_within(256.., 0);
-                pos = 256;
+    /// The caller must have already toggled the power control GPIO. Returns
+    /// `Err(Error::Timeout)` if the device does not respond within ~30 tries.
+    pub fn resume<I2C, E>(&mut self, i2c: &mut I2C) -> Result<(), Error<E>>
+    where
+        I2C: Write<Error = E>,
+    {
+        for _ in 0..30 {
+            if i2c.write(self.address, &[]).is_ok() {
+                return Ok(());
             }
         }
-        Err(Error::InvalidResponse)
+        Err(Error::Timeout)
     }
 
-    // -------------------------------------------------------------------------
-    // Internal helpers
-    // -------------------------------------------------------------------------
-
-    /// Send a UBX CFG packet (class 0x06) and flush.
-    fn send_cfg(&mut self, payload: &[u8]) -> Result<(), E> {
-        self.uart.write_all(payload)?;
-        self.uart.flush()
+    /// Read and parse one `UBX-NAV-PVT` message from the device output stream.
+    ///
+    /// Returns `Ok(None)` when no complete PVT message is currently available.
+    pub fn read_pvt<I2C, E>(&mut self, i2c: &mut I2C) -> Result<Option<NavPvt>, Error<E>>
+    where
+        I2C: Read<Error = E> + WriteRead<Error = E>,
+    {
+        let mut rx = [0u8; RX_BUF];
+        let n = self.drain(i2c, &mut rx)?;
+        Ok(parse_nav_pvt(&rx[..n]))
     }
 
-    /// Poll `UBX-MON-VER` to verify the device responds.
-    fn poll_version(&mut self) -> Result<(), Error<E>> {
-        let pkt: heapless::Vec<u8, 8> = encode_ubx(ubx::CLASS_MON, ubx::ID_MON_VER, &[]);
-        self.uart.write_all(&pkt)?;
-        self.uart.flush()?;
-        self.wait_ack(ubx::CLASS_MON, ubx::ID_MON_VER)
-    }
+    // -----------------------------------------------------------------
+    // Private helpers
+    // -----------------------------------------------------------------
 
-    /// Disable all default NMEA output messages on UART1.
-    fn disable_nmea(&mut self) -> Result<(), Error<E>> {
-        const NMEA_IDS: &[u8] = &[0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09];
-        for &id in NMEA_IDS {
-            let msg = CfgMsg {
-                msg_class: ubx::CLASS_NMEA,
-                msg_id: id,
-                rate: 0,
-            };
-            let pkt = msg.encode();
-            self.uart.write_all(&pkt)?;
-            self.uart.flush()?;
-            self.wait_ack(ubx::CLASS_CFG, ubx::ID_CFG_MSG)?;
+    /// Read all bytes currently available from the device into `buf`.
+    ///
+    /// Checks registers 0xFD/0xFE for the byte count, then reads in 32-byte
+    /// chunks from the data stream at 0xFF. Returns the number of bytes stored.
+    fn drain<I2C, E>(&mut self, i2c: &mut I2C, buf: &mut [u8]) -> Result<usize, Error<E>>
+    where
+        I2C: Read<Error = E> + WriteRead<Error = E>,
+    {
+        let mut avail_bytes = [0u8; 2];
+        i2c.write_read(self.address, &[REG_BYTES_AVAIL], &mut avail_bytes)?;
+        let avail = u16::from_be_bytes(avail_bytes) as usize;
+        // 0x0000 = nothing ready; 0xFFFF = not yet initialised
+        if avail == 0 || avail == 0xFFFF {
+            return Ok(0);
         }
-        Ok(())
+        let to_read = avail.min(buf.len());
+        let mut pos = 0;
+        while pos < to_read {
+            let chunk = (to_read - pos).min(CHUNK);
+            i2c.read(self.address, &mut buf[pos..pos + chunk])?;
+            pos += chunk;
+        }
+        Ok(pos)
     }
 
-    /// Read bytes from UART until a UBX ACK-ACK or ACK-NAK is received for the
-    /// given class/id, or until a matching response packet is found.
-    fn wait_ack(&mut self, cls: u8, id: u8) -> Result<(), Error<E>> {
-        let mut buf = [0u8; 256];
-        let mut pos = 0usize;
-
-        // Simple finite-loop read to avoid blocking forever on no_std.
-        for _ in 0..4096 {
-            let mut byte = [0u8; 1];
-            if self.uart.read(&mut byte).map_err(Error::Io)? == 0 {
-                continue;
+    /// Drain the I2C stream repeatedly, scanning for ACK/NAK for `(cls, id)`.
+    ///
+    /// Retries up to 50 times before returning `Err(Error::Timeout)`.
+    fn wait_ack<I2C, E>(&mut self, i2c: &mut I2C, cls: u8, id: u8) -> Result<(), Error<E>>
+    where
+        I2C: Read<Error = E> + WriteRead<Error = E>,
+    {
+        let mut rx = [0u8; RX_BUF];
+        let mut pos = 0;
+        for _ in 0..50 {
+            if rx.len() - pos < 16 {
+                pos = 0;
             }
-            if pos < buf.len() {
-                buf[pos] = byte[0];
-                pos += 1;
-            }
-
-            // Try to parse from the beginning of the buffer.
-            match parse_ubx_response(&buf[..pos], cls, id) {
+            let n = self.drain(i2c, &mut rx[pos..])?;
+            pos += n;
+            match parse_ubx_response(&rx[..pos], cls, id) {
                 Ok(true) => return Ok(()),
-                Ok(false) => {}
-                Err(ubx::ParseError::Nak) => return Err(Error::NoAck),
-                Err(ubx::ParseError::Checksum) => return Err(Error::ChecksumError),
-                Err(_) => {}
+                Err(ParseError::Nak) => return Err(Error::Nak),
+                _ => {}
             }
         }
-        Err(Error::NoAck)
+        Err(Error::Timeout)
     }
 }
