@@ -1,0 +1,42 @@
+[package]
+name = "example-sfy"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "example-sfy"
+path = "src/main.rs"
+
+[dependencies]
+cortex-m = { version = "0.7", features = ["critical-section-single-core"] }
+cortex-m-rt = "0.7"
+panic-probe = { version = "0.3", features = ["print-defmt"] }
+defmt = "0.3"
+defmt-rtt = "0.4"
+nb = "1"
+
+# embedded-hal 0.2 for the BlockingUart adapter (ambiq-hal speaks 0.2)
+embedded-hal = "0.2"
+# embedded-io 0.6 to satisfy the max-m10s library
+embedded-io = "0.6"
+
+[dependencies.ambiq-hal]
+git = "https://github.com/gauteh/ambiq-rs"
+features = ["ambiq-sdk", "sparkfun-redboard-nano", "rt"]
+
+[dependencies.max-m10s]
+path = ".."
+features = ["defmt"]
+
+# Optimize the firmware: smaller + faster on Cortex-M
+[profile.release]
+codegen-units = 1
+debug = true
+lto = true
+opt-level = "z"
+
+[profile.dev]
+codegen-units = 1
+debug = true
+lto = true
+opt-level = "z"

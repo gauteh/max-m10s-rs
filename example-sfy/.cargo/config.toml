@@ -1,0 +1,16 @@
+[target.thumbv7em-none-eabihf]
+# Flash using SparkFun Variable Loader (SVL) over USB serial
+# runner = "../../tools/svl-wrapper.sh"
+# Alternatively flash + debug with probe-rs:
+# runner = "probe-rs run --chip AMA3B1KK-KBR"
+
+[target.'cfg(all(target_arch = "arm", target_os = "none"))']
+rustflags = [
+  "-C", "link-arg=--nmagic",
+  "-C", "link-arg=-Tlink.x",
+  # defmt RTT linker section
+  "-C", "link-arg=-Tdefmt.x",
+]
+
+[build]
+target = "thumbv7em-none-eabihf"  # Cortex-M4F with FPU (Apollo3)
