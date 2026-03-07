@@ -46,6 +46,16 @@ const CHUNK: usize = 32;
 /// Internal receive buffer — matches the u-blox DDC FIFO size (512 bytes).
 const RX_BUF: usize = 512;
 
+/// Outcome of a [`MaxM10S::drain`] call.
+enum DrainResult {
+    /// The bytes-available counter reads `0x0000` — FIFO is empty.
+    NothingReady,
+    /// The bytes-available counter reads `0xFFFF` — device not yet initialised.
+    NotInitialized,
+    /// `n` bytes were read from the data stream into the caller's buffer.
+    Data(usize),
+}
+
 /// Driver error type.
 #[derive(Debug)]
 pub enum Error<E> {
@@ -173,14 +183,18 @@ impl MaxM10S {
 
     /// Read and parse one `UBX-NAV-PVT` message from the device output stream.
     ///
-    /// Returns `Ok(None)` when no complete PVT message is currently available.
+    /// Returns `Ok(None)` when the FIFO is empty or the device is not yet
+    /// initialised, and also when the FIFO contained data but no complete
+    /// NAV-PVT packet was found in it.
     pub fn read_pvt<I2C, E>(&mut self, i2c: &mut I2C) -> Result<Option<NavPvt>, Error<E>>
     where
         I2C: Read<Error = E> + WriteRead<Error = E>,
     {
         let mut rx = [0u8; RX_BUF];
-        let n = self.drain(i2c, &mut rx)?;
-        Ok(parse_nav_pvt(&rx[..n]))
+        match self.drain(i2c, &mut rx)? {
+            DrainResult::Data(n) => Ok(parse_nav_pvt(&rx[..n])),
+            DrainResult::NothingReady | DrainResult::NotInitialized => Ok(None),
+        }
     }
 
     // -----------------------------------------------------------------
@@ -191,19 +205,20 @@ impl MaxM10S {
     ///
     /// Reads the byte count from registers 0xFD/0xFE, then explicitly points to
     /// register 0xFF (data stream) and reads in 32-byte chunks.
-    /// Returns the number of bytes stored.
-    fn drain<I2C, E>(&mut self, i2c: &mut I2C, buf: &mut [u8]) -> Result<usize, Error<E>>
+    fn drain<I2C, E>(&mut self, i2c: &mut I2C, buf: &mut [u8]) -> Result<DrainResult, Error<E>>
     where
         I2C: Read<Error = E> + WriteRead<Error = E>,
     {
         let mut avail_bytes = [0u8; 2];
         i2c.write_read(self.address, &[REG_BYTES_AVAIL], &mut avail_bytes)?;
-        let avail = u16::from_be_bytes(avail_bytes) as usize;
-        // 0x0000 = nothing ready; 0xFFFF = not yet initialised
-        if avail == 0 || avail == 0xFFFF {
-            return Ok(0);
+        let raw = u16::from_be_bytes(avail_bytes);
+        if raw == 0x0000 {
+            return Ok(DrainResult::NothingReady);
         }
-        let to_read = avail.min(buf.len());
+        if raw == 0xFFFF {
+            return Ok(DrainResult::NotInitialized);
+        }
+        let to_read = (raw as usize).min(buf.len());
         let mut pos = 0;
         // First chunk: use write_read to explicitly set pointer to 0xFF (data stream).
         let first_chunk = to_read.min(CHUNK);
@@ -215,7 +230,7 @@ impl MaxM10S {
             i2c.read(self.address, &mut buf[pos..pos + chunk])?;
             pos += chunk;
         }
-        Ok(pos)
+        Ok(DrainResult::Data(pos))
     }
 
     /// Drain the I2C stream repeatedly, scanning for ACK/NAK for `(cls, id)`.
@@ -231,12 +246,13 @@ impl MaxM10S {
             if rx.len() - pos < 16 {
                 pos = 0;
             }
-            let n = self.drain(i2c, &mut rx[pos..])?;
-            pos += n;
-            match parse_ubx_response(&rx[..pos], cls, id) {
-                Ok(true) => return Ok(()),
-                Err(ParseError::Nak) => return Err(Error::Nak),
-                _ => {}
+            if let DrainResult::Data(n) = self.drain(i2c, &mut rx[pos..])? {
+                pos += n;
+                match parse_ubx_response(&rx[..pos], cls, id) {
+                    Ok(true) => return Ok(()),
+                    Err(ParseError::Nak) => return Err(Error::Nak),
+                    _ => {}
+                }
             }
         }
         Err(Error::Timeout)

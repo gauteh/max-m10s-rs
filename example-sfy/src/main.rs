@@ -73,23 +73,25 @@ fn main() -> ! {
         led.toggle().unwrap();
 
         match gnss.read_pvt(&mut i2c) {
-            Ok(Some(pvt)) => {
+            Ok(Some(pvt)) if pvt.fix_type >= 2 => {
                 let lat_deg = pvt.lat / 10_000_000;
                 let lat_frac = (pvt.lat.abs() % 10_000_000) / 10;
                 let lon_deg = pvt.lon / 10_000_000;
                 let lon_frac = (pvt.lon.abs() % 10_000_000) / 10;
 
                 defmt::info!(
-                    "fix={} sats={} lat={}.{:06} lon={}.{:06} hMSL={}mm hAcc={}mm",
-                    pvt.fix_type,
-                    pvt.num_sv,
-                    lat_deg,
-                    lat_frac,
-                    lon_deg,
-                    lon_frac,
+                    "{}-{:02}-{:02} {:02}:{:02}:{:02} UTC | fix={} sats={} lat={}.{:06} lon={}.{:06} hMSL={}mm hAcc={}mm",
+                    pvt.year, pvt.month, pvt.day,
+                    pvt.hour, pvt.min, pvt.sec,
+                    pvt.fix_type, pvt.num_sv,
+                    lat_deg, lat_frac,
+                    lon_deg, lon_frac,
                     pvt.height_msl_mm,
                     pvt.h_acc_mm,
                 );
+            }
+            Ok(Some(pvt)) => {
+                defmt::debug!("no fix (type={} sats={})", pvt.fix_type, pvt.num_sv);
             }
             Ok(None) => {}
             Err(e) => {

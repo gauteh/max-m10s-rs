@@ -155,6 +155,20 @@ impl RxmPmReq {
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct NavPvt {
+    /// UTC year (e.g. 2024). Valid when `valid` bit 0 is set.
+    pub year: u16,
+    /// UTC month (1–12). Valid when `valid` bit 0 is set.
+    pub month: u8,
+    /// UTC day of month (1–31). Valid when `valid` bit 0 is set.
+    pub day: u8,
+    /// UTC hour (0–23). Valid when `valid` bit 1 is set.
+    pub hour: u8,
+    /// UTC minute (0–59). Valid when `valid` bit 1 is set.
+    pub min: u8,
+    /// UTC second (0–60). Valid when `valid` bit 1 is set.
+    pub sec: u8,
+    /// Validity flags: bit 0=validDate, bit 1=validTime, bit 2=fullyResolved.
+    pub valid: u8,
     /// Longitude in units of 1e-7 degrees (divide by 1e7 for degrees).
     pub lon: i32,
     /// Latitude in units of 1e-7 degrees (divide by 1e7 for degrees).
@@ -165,14 +179,12 @@ pub struct NavPvt {
     pub fix_type: u8,
     /// Number of satellites used in the navigation solution.
     pub num_sv: u8,
-    /// Validity flags (bit 0=validDate, bit 1=validTime, bit 2=fullyResolved).
-    pub valid: u8,
     /// Horizontal accuracy estimate in millimetres.
     pub h_acc_mm: u32,
 }
 
 /// Scan `buf` for the first valid `UBX-NAV-PVT` packet and return the parsed
-/// position. Returns `None` if no complete, checksum-valid NAV-PVT is found.
+/// position/time. Returns `None` if no complete, checksum-valid NAV-PVT is found.
 pub fn parse_nav_pvt(buf: &[u8]) -> Option<NavPvt> {
     let mut i = 0;
     while i + 6 <= buf.len() {
@@ -180,38 +192,41 @@ pub fn parse_nav_pvt(buf: &[u8]) -> Option<NavPvt> {
             i += 1;
             continue;
         }
-        let pkt_cls = buf[i + 2];
-        let pkt_id = buf[i + 3];
-        let pkt_len = u16::from_le_bytes([buf[i + 4], buf[i + 5]]) as usize;
+        let pkt_cls = *buf.get(i + 2)?;
+        let pkt_id = *buf.get(i + 3)?;
+        let pkt_len =
+            u16::from_le_bytes([*buf.get(i + 4)?, *buf.get(i + 5)?]) as usize;
         let total = 6 + pkt_len + 2;
 
         if pkt_cls != CLASS_NAV || pkt_id != ID_NAV_PVT {
-            if i + total <= buf.len() {
-                i += total;
-            } else {
-                i += 1;
-            }
+            i += if i + total <= buf.len() { total } else { 1 };
             continue;
         }
         if i + total > buf.len() || pkt_len < 92 {
             return None;
         }
 
-        let payload = &buf[i + 6..i + 6 + pkt_len];
+        let payload = buf.get(i + 6..i + 6 + pkt_len)?;
         let (ck_a, ck_b) = checksum(pkt_cls, pkt_id, payload);
-        if ck_a != buf[i + 6 + pkt_len] || ck_b != buf[i + 6 + pkt_len + 1] {
+        if ck_a != *buf.get(i + 6 + pkt_len)? || ck_b != *buf.get(i + 6 + pkt_len + 1)? {
             i += 1;
             continue;
         }
 
         return Some(NavPvt {
-            lon: i32::from_le_bytes(payload[24..28].try_into().unwrap()),
-            lat: i32::from_le_bytes(payload[28..32].try_into().unwrap()),
-            height_msl_mm: i32::from_le_bytes(payload[36..40].try_into().unwrap()),
-            fix_type: payload[20],
-            num_sv: payload[23],
-            valid: payload[11],
-            h_acc_mm: u32::from_le_bytes(payload[40..44].try_into().unwrap()),
+            year:          u16::from_le_bytes(payload.get(4..6)?.try_into().ok()?),
+            month:         *payload.get(6)?,
+            day:           *payload.get(7)?,
+            hour:          *payload.get(8)?,
+            min:           *payload.get(9)?,
+            sec:           *payload.get(10)?,
+            valid:         *payload.get(11)?,
+            fix_type:      *payload.get(20)?,
+            num_sv:        *payload.get(23)?,
+            lon:           i32::from_le_bytes(payload.get(24..28)?.try_into().ok()?),
+            lat:           i32::from_le_bytes(payload.get(28..32)?.try_into().ok()?),
+            height_msl_mm: i32::from_le_bytes(payload.get(36..40)?.try_into().ok()?),
+            h_acc_mm:      u32::from_le_bytes(payload.get(40..44)?.try_into().ok()?),
         });
     }
     None
