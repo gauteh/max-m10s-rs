@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := build
 USB ?= /dev/ttyUSB0
 T ?= debug
-VARIANT ?= example-sfy
+VARIANT ?= basic
 
 ifeq "$(T)" "release"
     ELF:= target/thumbv7em-none-eabihf/release/$(VARIANT)
@@ -23,7 +23,7 @@ bump-jlink:
 	-python3 ../tools/bump-jlink
 
 build:
-	cargo build $(CARGO_FLAGS)
+	cargo build $(CARGO_FLAGS) --bin $(VARIANT)
 
 bin: build
 	arm-none-eabi-objcopy -S -O binary $(ELF) target/$(VARIANT).bin

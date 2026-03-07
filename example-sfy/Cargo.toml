@@ -3,10 +3,6 @@ name = "example-sfy"
 version = "0.1.0"
 edition = "2021"
 
-[[bin]]
-name = "example-sfy"
-path = "src/main.rs"
-
 [dependencies]
 cortex-m = { version = "0.7", features = ["critical-section-single-core"] }
 cortex-m-rt = "0.7"
