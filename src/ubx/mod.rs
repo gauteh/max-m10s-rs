@@ -17,10 +17,21 @@ pub const CLASS_RXM: u8 = 0x02;
 // UBX message IDs
 /// CFG-RATE message ID.
 pub const ID_CFG_RATE: u8 = 0x08;
-/// CFG-TP5 (timepulse) message ID.
-pub const ID_CFG_TP5: u8 = 0x31;
+/// CFG-VALSET (key-value configuration set) message ID.
+pub const ID_CFG_VALSET: u8 = 0x8A;
 /// CFG-MSG message ID.
 pub const ID_CFG_MSG: u8 = 0x01;
+
+// CFG-VALSET key IDs for the timepulse (CFG-TP group, TP1).
+// All values are in nanoseconds where applicable.
+/// Enable / disable TP1 output (U1/bool: 0=off, 1=on).
+pub const KEY_TP_TP1_ENA: u32     = 0x10510007;
+/// TP1 output polarity (U1/bool: 0=falling, 1=rising).
+pub const KEY_TP_POL_TP1: u32     = 0x1051000B;
+/// TP1 period in nanoseconds when NOT locked to GNSS (U4).
+pub const KEY_TP_PERIOD_TP1: u32  = 0x40510002;
+/// TP1 pulse-length in nanoseconds when NOT locked to GNSS (U4).
+pub const KEY_TP_LEN_TP1: u32     = 0x40510003;
 /// MON-VER (receiver version) message ID.
 pub const ID_MON_VER: u8 = 0x04;
 /// ACK-ACK message ID.
@@ -65,34 +76,47 @@ impl CfgRate {
     }
 }
 
-/// `UBX-CFG-TP5` — timepulse (PPS) configuration for one timepulse channel.
-pub struct CfgTp5 {
-    /// Timepulse index (0 = TIMEPULSE, 1 = TIMEPULSE2).
-    pub tp_idx: u8,
-    /// Interval between pulses in microseconds.
-    pub interval_us: u32,
-    /// Pulse length in microseconds.
-    pub pulse_len_us: u32,
-    /// Whether to activate the timepulse output.
-    pub active: bool,
+/// `UBX-CFG-VALSET` — set timepulse period and pulse-length via the key-value interface.
+///
+/// Encodes a single 28-byte frame containing two U4 key-value pairs:
+/// `CFG-TP-PERIOD_TP1` and `CFG-TP-LEN_TP1`. Both values are in nanoseconds.
+///
+/// Safe to send on Apollo3 IOM I2C (frame ≤ 32 bytes).
+pub fn encode_tp_timing(period_ns: u32, pulse_len_ns: u32, out: &mut [u8]) -> usize {
+    let mut payload = [0u8; 20];
+    // VALSET header: version=0 (RAM), layers=0x01 (RAM only), reserved
+    payload[0] = 0x00;
+    payload[1] = 0x01;
+    payload[2] = 0x00;
+    payload[3] = 0x00;
+    // KEY_TP_PERIOD_TP1 + value
+    payload[4..8].copy_from_slice(&KEY_TP_PERIOD_TP1.to_le_bytes());
+    payload[8..12].copy_from_slice(&period_ns.to_le_bytes());
+    // KEY_TP_LEN_TP1 + value
+    payload[12..16].copy_from_slice(&KEY_TP_LEN_TP1.to_le_bytes());
+    payload[16..20].copy_from_slice(&pulse_len_ns.to_le_bytes());
+    encode_ubx(CLASS_CFG, ID_CFG_VALSET, &payload, out)
 }
 
-impl CfgTp5 {
-    /// Encode into `out`. Returns the number of bytes written.
-    pub fn encode(&self, out: &mut [u8]) -> usize {
-        let flags: u32 = if self.active { 0x77 } else { 0x00 };
-        let mut payload = [0u8; 32];
-        payload[0] = self.tp_idx;
-        payload[1] = 1; // version (must be 1 for the 32-byte extended format)
-        // bytes 2..7: reserved / cable delay (leave 0)
-        payload[8..12].copy_from_slice(&self.interval_us.to_le_bytes()); // freqPeriod
-        payload[12..16].copy_from_slice(&self.interval_us.to_le_bytes()); // freqPeriodLock
-        payload[16..20].copy_from_slice(&self.pulse_len_us.to_le_bytes()); // pulseLenRatio
-        payload[20..24].copy_from_slice(&self.pulse_len_us.to_le_bytes()); // pulseLenRatioLock
-        // userConfigDelay (i32) at 24 — leave 0
-        payload[28..32].copy_from_slice(&flags.to_le_bytes());
-        encode_ubx(CLASS_CFG, ID_CFG_TP5, &payload, out)
-    }
+/// `UBX-CFG-VALSET` — enable TP1 output and set rising-edge polarity.
+///
+/// Encodes a single 22-byte frame containing two U1 key-value pairs:
+/// `CFG-TP-TP1_ENA` = 1 and `CFG-TP-POL_TP1` = 1 (rising edge).
+///
+/// Safe to send on Apollo3 IOM I2C (frame ≤ 32 bytes).
+pub fn encode_tp_enable(out: &mut [u8]) -> usize {
+    let mut payload = [0u8; 14];
+    payload[0] = 0x00; // version
+    payload[1] = 0x01; // layers: RAM
+    payload[2] = 0x00;
+    payload[3] = 0x00;
+    // KEY_TP_TP1_ENA = 1
+    payload[4..8].copy_from_slice(&KEY_TP_TP1_ENA.to_le_bytes());
+    payload[8] = 1;
+    // KEY_TP_POL_TP1 = 1 (rising edge)
+    payload[9..13].copy_from_slice(&KEY_TP_POL_TP1.to_le_bytes());
+    payload[13] = 1;
+    encode_ubx(CLASS_CFG, ID_CFG_VALSET, &payload, out)
 }
 
 /// `UBX-CFG-MSG` — enable or disable a message on a specific port.

@@ -26,9 +26,10 @@
 pub mod ubx;
 
 use ubx::{
-    encode_ubx, parse_nav_pvt, parse_ubx_response, CfgMsg, CfgRate, CfgTp5, RxmPmReq,
+    encode_ubx, parse_nav_pvt, parse_ubx_response, CfgMsg, CfgRate, RxmPmReq,
+    encode_tp_timing, encode_tp_enable,
     NavPvt, ParseError, CLASS_CFG, CLASS_MON, CLASS_NAV,
-    ID_CFG_RATE, ID_CFG_TP5, ID_CFG_MSG, ID_MON_VER, ID_NAV_PVT,
+    ID_CFG_RATE, ID_CFG_VALSET, ID_CFG_MSG, ID_MON_VER, ID_NAV_PVT,
 };
 
 use embedded_hal::blocking::i2c::{Read, Write, WriteRead};
@@ -118,24 +119,32 @@ impl MaxM10S {
         self.wait_ack(i2c, CLASS_CFG, ID_CFG_RATE)
     }
 
-    /// Configure the timepulse (PPS) output.
+    /// Configure the timepulse (PPS) output via `UBX-CFG-VALSET`.
     ///
-    /// `interval_us`: period in microseconds (e.g. `1_000_000` for 1 Hz).
-    /// `pulse_len_us`: pulse width in microseconds.
+    /// `interval_ns`: period in nanoseconds (e.g. `1_000_000_000` for 1 Hz).
+    /// `pulse_len_ns`: pulse width in nanoseconds (e.g. `100_000_000` for 100 ms).
+    ///
+    /// Sends two separate VALSET frames (≤ 32 bytes each) to stay within the
+    /// Apollo3 IOM FIFO limit.  Waits for an ACK after each frame.
     pub fn set_pps_rate<I2C, E>(
         &mut self,
         i2c: &mut I2C,
-        interval_us: u32,
-        pulse_len_us: u32,
+        interval_ns: u32,
+        pulse_len_ns: u32,
     ) -> Result<(), Error<E>>
     where
         I2C: Write<Error = E> + Read<Error = E> + WriteRead<Error = E>,
     {
-        let tp5 = CfgTp5 { tp_idx: 0, interval_us, pulse_len_us, active: true };
-        let mut buf = [0u8; 48];
-        let n = tp5.encode(&mut buf);
+        // Frame 1: timing (period + pulse length) — 28 bytes
+        let mut buf = [0u8; 32];
+        let n = encode_tp_timing(interval_ns, pulse_len_ns, &mut buf);
         i2c.write(self.address, &buf[..n])?;
-        self.wait_ack(i2c, CLASS_CFG, ID_CFG_TP5)
+        self.wait_ack(i2c, CLASS_CFG, ID_CFG_VALSET)?;
+
+        // Frame 2: enable TP1 + set rising-edge polarity — 22 bytes
+        let n = encode_tp_enable(&mut buf);
+        i2c.write(self.address, &buf[..n])?;
+        self.wait_ack(i2c, CLASS_CFG, ID_CFG_VALSET)
     }
 
     /// Enable `UBX-NAV-PVT` output on the I2C port at every navigation fix.
