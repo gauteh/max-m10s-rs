@@ -169,18 +169,34 @@ pub struct NavPvt {
     pub sec: u8,
     /// Validity flags: bit 0=validDate, bit 1=validTime, bit 2=fullyResolved.
     pub valid: u8,
+    /// Time accuracy estimate in nanoseconds.
+    pub t_acc_ns: u32,
+    /// Fraction of second in nanoseconds (-1e9..+1e9). Valid when `valid` bit 2 (fullyResolved) is set.
+    pub nano: i32,
+    /// GNSS fix type: 0=no fix, 1=dead-reckoning, 2=2D, 3=3D, 4=GNSS+DR, 5=time-only.
+    pub fix_type: u8,
+    /// Fix status flags. Bits 5–6: carrSoln (0=no carrier, 1=float, 2=fixed).
+    pub flags: u8,
+    /// Number of satellites used in the navigation solution.
+    pub num_sv: u8,
     /// Longitude in units of 1e-7 degrees (divide by 1e7 for degrees).
     pub lon: i32,
     /// Latitude in units of 1e-7 degrees (divide by 1e7 for degrees).
     pub lat: i32,
     /// Height above mean sea level in millimetres.
     pub height_msl_mm: i32,
-    /// GNSS fix type: 0=no fix, 1=dead-reckoning, 2=2D, 3=3D, 4=GNSS+DR, 5=time-only.
-    pub fix_type: u8,
-    /// Number of satellites used in the navigation solution.
-    pub num_sv: u8,
     /// Horizontal accuracy estimate in millimetres.
     pub h_acc_mm: u32,
+    /// Vertical accuracy estimate in millimetres.
+    pub v_acc_mm: u32,
+    /// NED north velocity in mm/s.
+    pub vel_n_mm_s: i32,
+    /// NED east velocity in mm/s.
+    pub vel_e_mm_s: i32,
+    /// NED down velocity in mm/s.
+    pub vel_d_mm_s: i32,
+    /// Speed (3-D) accuracy estimate in mm/s.
+    pub s_acc_mm_s: u32,
 }
 
 /// Scan `buf` for the first valid `UBX-NAV-PVT` packet and return the parsed
@@ -221,12 +237,20 @@ pub fn parse_nav_pvt(buf: &[u8]) -> Option<NavPvt> {
             min:           *payload.get(9)?,
             sec:           *payload.get(10)?,
             valid:         *payload.get(11)?,
+            t_acc_ns:      u32::from_le_bytes(payload.get(12..16)?.try_into().ok()?),
+            nano:          i32::from_le_bytes(payload.get(16..20)?.try_into().ok()?),
             fix_type:      *payload.get(20)?,
+            flags:         *payload.get(21)?,
             num_sv:        *payload.get(23)?,
             lon:           i32::from_le_bytes(payload.get(24..28)?.try_into().ok()?),
             lat:           i32::from_le_bytes(payload.get(28..32)?.try_into().ok()?),
             height_msl_mm: i32::from_le_bytes(payload.get(36..40)?.try_into().ok()?),
             h_acc_mm:      u32::from_le_bytes(payload.get(40..44)?.try_into().ok()?),
+            v_acc_mm:      u32::from_le_bytes(payload.get(44..48)?.try_into().ok()?),
+            vel_n_mm_s:    i32::from_le_bytes(payload.get(48..52)?.try_into().ok()?),
+            vel_e_mm_s:    i32::from_le_bytes(payload.get(52..56)?.try_into().ok()?),
+            vel_d_mm_s:    i32::from_le_bytes(payload.get(56..60)?.try_into().ok()?),
+            s_acc_mm_s:    u32::from_le_bytes(payload.get(68..72)?.try_into().ok()?),
         });
     }
     None
@@ -365,5 +389,75 @@ mod tests {
         let n = encode_ubx(CLASS_ACK, ID_ACK_NAK, &nak_payload, &mut buf);
         let result = parse_ubx_response(&buf[..n], CLASS_CFG, ID_CFG_RATE);
         assert_eq!(result, Err(ParseError::Nak));
+    }
+
+    #[test]
+    fn test_parse_nav_pvt_new_fields() {
+        // Build a synthetic 92-byte NAV-PVT payload with known values at each offset.
+        let mut payload = [0u8; 92];
+
+        // Time fields (offsets 4–11)
+        payload[4..6].copy_from_slice(&2024u16.to_le_bytes()); // year
+        payload[6] = 7;   // month
+        payload[7] = 15;  // day
+        payload[8] = 12;  // hour
+        payload[9] = 30;  // min
+        payload[10] = 45; // sec
+        payload[11] = 0x03; // valid: validDate + validTime
+
+        // t_acc_ns = 500 (offset 12)
+        payload[12..16].copy_from_slice(&500u32.to_le_bytes());
+        // nano = -123456 (offset 16)
+        payload[16..20].copy_from_slice(&(-123456i32).to_le_bytes());
+
+        // fix_type = 3 (3D, offset 20), flags = 0x40 (carrSoln=2=fixed, offset 21)
+        payload[20] = 3;
+        payload[21] = 0x40;
+        // numSV = 12 (offset 23)
+        payload[23] = 12;
+
+        // lon = 59_123_456 (offset 24), lat = 10_987_654 (offset 28)
+        payload[24..28].copy_from_slice(&59_123_456i32.to_le_bytes());
+        payload[28..32].copy_from_slice(&10_987_654i32.to_le_bytes());
+        // hMSL = 45_000 mm (offset 36), hAcc = 2500 mm (offset 40)
+        payload[36..40].copy_from_slice(&45_000i32.to_le_bytes());
+        payload[40..44].copy_from_slice(&2_500u32.to_le_bytes());
+        // vAcc = 3000 mm (offset 44)
+        payload[44..48].copy_from_slice(&3_000u32.to_le_bytes());
+        // velN = 100, velE = -200, velD = 50 mm/s (offsets 48, 52, 56)
+        payload[48..52].copy_from_slice(&100i32.to_le_bytes());
+        payload[52..56].copy_from_slice(&(-200i32).to_le_bytes());
+        payload[56..60].copy_from_slice(&50i32.to_le_bytes());
+        // sAcc = 75 mm/s (offset 68)
+        payload[68..72].copy_from_slice(&75u32.to_le_bytes());
+
+        // Wrap in a full UBX frame
+        let mut frame = [0u8; 6 + 92 + 2];
+        let n = encode_ubx(CLASS_NAV, ID_NAV_PVT, &payload, &mut frame);
+        assert_eq!(n, 6 + 92 + 2);
+
+        let pvt = parse_nav_pvt(&frame[..n]).expect("should parse");
+
+        assert_eq!(pvt.year, 2024);
+        assert_eq!(pvt.month, 7);
+        assert_eq!(pvt.day, 15);
+        assert_eq!(pvt.hour, 12);
+        assert_eq!(pvt.min, 30);
+        assert_eq!(pvt.sec, 45);
+        assert_eq!(pvt.valid, 0x03);
+        assert_eq!(pvt.t_acc_ns, 500);
+        assert_eq!(pvt.nano, -123456);
+        assert_eq!(pvt.fix_type, 3);
+        assert_eq!(pvt.flags, 0x40);
+        assert_eq!(pvt.num_sv, 12);
+        assert_eq!(pvt.lon, 59_123_456);
+        assert_eq!(pvt.lat, 10_987_654);
+        assert_eq!(pvt.height_msl_mm, 45_000);
+        assert_eq!(pvt.h_acc_mm, 2_500);
+        assert_eq!(pvt.v_acc_mm, 3_000);
+        assert_eq!(pvt.vel_n_mm_s, 100);
+        assert_eq!(pvt.vel_e_mm_s, -200);
+        assert_eq!(pvt.vel_d_mm_s, 50);
+        assert_eq!(pvt.s_acc_mm_s, 75);
     }
 }
