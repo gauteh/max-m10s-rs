@@ -119,8 +119,13 @@ fn main() -> ! {
     }
 
     gnss.set_output_rate(&mut i2c, 1).unwrap();
-    // Configure PPS: 1 Hz, 100 ms pulse. The TS pin will fire on the rising edge.
-    gnss.set_pps_rate(&mut i2c, 1_000_000, 100_000).unwrap();
+    // The MAX-M10S default timepulse is already 1 Hz — set_pps_rate is optional.
+    // If the device returns NAK or Timeout, log it and continue; the TS pin will
+    // still fire at 1 Hz once a fix is acquired.
+    match gnss.set_pps_rate(&mut i2c, 1_000_000, 100_000) {
+        Ok(()) => defmt::info!("PPS configured: 1 Hz, 100 ms pulse"),
+        Err(e) => defmt::warn!("set_pps_rate failed (using device default): {:?}", defmt::Debug2Format(&e)),
+    }
     gnss.enable_pvt(&mut i2c).unwrap();
 
     // Arm the TS interrupt and enable GPIO interrupts globally.

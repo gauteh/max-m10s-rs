@@ -83,7 +83,8 @@ impl CfgTp5 {
         let flags: u32 = if self.active { 0x77 } else { 0x00 };
         let mut payload = [0u8; 32];
         payload[0] = self.tp_idx;
-        // bytes 1..7: reserved / cable delay (leave 0)
+        payload[1] = 1; // version (must be 1 for the 32-byte extended format)
+        // bytes 2..7: reserved / cable delay (leave 0)
         payload[8..12].copy_from_slice(&self.interval_us.to_le_bytes()); // freqPeriod
         payload[12..16].copy_from_slice(&self.interval_us.to_le_bytes()); // freqPeriodLock
         payload[16..20].copy_from_slice(&self.pulse_len_us.to_le_bytes()); // pulseLenRatio
