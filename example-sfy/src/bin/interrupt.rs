@@ -83,7 +83,10 @@ fn main() -> ! {
     // Power on the GPS module via d8 (pad 38). LOW = power on.
     let mut gps_pwr = pins.d8.into_push_pull_output();
     gps_pwr.set_low().unwrap();
-    delay.delay_ms(100u32);
+
+    // Requires a delay of more than 200 ms (and less than 2s), otherwise
+    // initializing will fail with NAK at first.
+    delay.delay_ms(2000_u32);
 
     // I2C on IOM2: SDA = d17 (pad 25), SCL = d18 (pad 27). 100 kHz per hardware spec.
     let mut i2c = Iom2::new(dp.IOM2, pins.d17, pins.d18, Freq::F100kHz);
@@ -118,15 +121,19 @@ fn main() -> ! {
         }
     }
 
+    defmt::info!("set output rate");
     gnss.set_output_rate(&mut i2c, 1).unwrap();
     // Configure PPS: 1 Hz period, 100 ms pulse, rising edge on TS pin.
     // Uses CFG-VALSET split across three ≤32-byte I2C frames.
+    defmt::info!("set pps rate");
     match gnss.set_pps_rate(&mut i2c, 1_000_000, 100_000) {
         Ok(()) => defmt::info!("PPS configured: 1 Hz, 100 ms pulse"),
         Err(e) => defmt::warn!("set_pps_rate failed: {:?}", defmt::Debug2Format(&e)),
     }
+    defmt::info!("enable pvt");
     gnss.enable_pvt(&mut i2c).unwrap();
 
+    defmt::info!("enable interrupts");
     // Arm the TS interrupt and enable GPIO interrupts globally.
     free(|cs| {
         if let Some(pin) = TS_PIN.borrow(cs).borrow_mut().as_mut() {
@@ -140,9 +147,15 @@ fn main() -> ! {
 
     defmt::info!("Waiting for GPS timepulse interrupts…");
 
+    for _ in 1..10 {
+        defmt::info!("flush");
+    }
+
     loop {
         // Sleep until the next interrupt.
         asm::wfi();
+
+        defmt::info!("loop");
 
         if PVT_READY.swap(false, Ordering::Acquire) {
             led.toggle().unwrap();
