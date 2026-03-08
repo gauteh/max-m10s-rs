@@ -106,12 +106,12 @@ impl MaxM10S {
 
     /// Set the navigation measurement rate.
     ///
-    /// `rate_hz` is clamped to 1–10 Hz.
+    /// `rate_hz` is clamped to 1–25 Hz (MAX-M10S maximum).
     pub fn set_output_rate<I2C, E>(&mut self, i2c: &mut I2C, rate_hz: u8) -> Result<(), Error<E>>
     where
         I2C: Write<Error = E> + Read<Error = E> + WriteRead<Error = E>,
     {
-        let meas_rate_ms = 1000u16 / (rate_hz.max(1).min(10) as u16);
+        let meas_rate_ms = 1000u16 / (rate_hz.max(1).min(25) as u16);
         let rate = CfgRate { meas_rate_ms, nav_rate: 1, time_ref: 0 };
         let mut buf = [0u8; 16];
         let n = rate.encode(&mut buf);
