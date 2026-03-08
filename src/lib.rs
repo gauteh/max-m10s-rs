@@ -27,7 +27,7 @@ pub mod ubx;
 
 use ubx::{
     encode_ubx, parse_nav_pvt, parse_ubx_response, CfgMsg, CfgRate, RxmPmReq,
-    encode_tp_timing, encode_tp_enable,
+    encode_tp_period, encode_tp_len, encode_tp_enable,
     NavPvt, ParseError, CLASS_CFG, CLASS_MON, CLASS_NAV,
     ID_CFG_RATE, ID_CFG_VALSET, ID_CFG_MSG, ID_MON_VER, ID_NAV_PVT,
 };
@@ -121,27 +121,30 @@ impl MaxM10S {
 
     /// Configure the timepulse (PPS) output via `UBX-CFG-VALSET`.
     ///
-    /// `interval_ns`: period in nanoseconds (e.g. `1_000_000_000` for 1 Hz).
-    /// `pulse_len_ns`: pulse width in nanoseconds (e.g. `100_000_000` for 100 ms).
+    /// `interval_us`: period in microseconds (e.g. `1_000_000` for 1 Hz).
+    /// `pulse_len_us`: pulse width in microseconds (e.g. `100_000` for 100 ms).
     ///
-    /// Sends two separate VALSET frames (≤ 32 bytes each) to stay within the
-    /// Apollo3 IOM FIFO limit.  Waits for an ACK after each frame.
+    /// Sends three separate VALSET frames (≤ 32 bytes each) to stay within
+    /// the Apollo3 IOM FIFO limit.  Waits for an ACK after each frame.
     pub fn set_pps_rate<I2C, E>(
         &mut self,
         i2c: &mut I2C,
-        interval_ns: u32,
-        pulse_len_ns: u32,
+        interval_us: u32,
+        pulse_len_us: u32,
     ) -> Result<(), Error<E>>
     where
         I2C: Write<Error = E> + Read<Error = E> + WriteRead<Error = E>,
     {
-        // Frame 1: timing (period + pulse length) — 28 bytes
         let mut buf = [0u8; 32];
-        let n = encode_tp_timing(interval_ns, pulse_len_ns, &mut buf);
+
+        let n = encode_tp_period(interval_us, &mut buf);
         i2c.write(self.address, &buf[..n])?;
         self.wait_ack(i2c, CLASS_CFG, ID_CFG_VALSET)?;
 
-        // Frame 2: enable TP1 + set rising-edge polarity — 22 bytes
+        let n = encode_tp_len(pulse_len_us, &mut buf);
+        i2c.write(self.address, &buf[..n])?;
+        self.wait_ack(i2c, CLASS_CFG, ID_CFG_VALSET)?;
+
         let n = encode_tp_enable(&mut buf);
         i2c.write(self.address, &buf[..n])?;
         self.wait_ack(i2c, CLASS_CFG, ID_CFG_VALSET)

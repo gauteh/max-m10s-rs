@@ -22,16 +22,22 @@ pub const ID_CFG_VALSET: u8 = 0x8A;
 /// CFG-MSG message ID.
 pub const ID_CFG_MSG: u8 = 0x01;
 
-// CFG-VALSET key IDs for the timepulse (CFG-TP group, TP1).
-// All values are in nanoseconds where applicable.
+// CFG-VALSET key IDs for the timepulse (CFG-TP group = 0x0005, TP1).
+// Units for period and pulse length are **microseconds**.
+/// TP1 period in µs when NOT locked to GNSS (U4).
+pub const KEY_TP_PERIOD_TP1: u32      = 0x40050002;
+/// TP1 period in µs when locked to GNSS (U4).
+pub const KEY_TP_PERIOD_LOCK_TP1: u32 = 0x40050003;
+/// TP1 pulse length in µs when NOT locked to GNSS (U4).
+pub const KEY_TP_LEN_TP1: u32         = 0x40050004;
+/// TP1 pulse length in µs when locked to GNSS (U4).
+pub const KEY_TP_LEN_LOCK_TP1: u32    = 0x40050005;
 /// Enable / disable TP1 output (U1/bool: 0=off, 1=on).
-pub const KEY_TP_TP1_ENA: u32     = 0x10510007;
+pub const KEY_TP_TP1_ENA: u32         = 0x10050007;
 /// TP1 output polarity (U1/bool: 0=falling, 1=rising).
-pub const KEY_TP_POL_TP1: u32     = 0x1051000B;
-/// TP1 period in nanoseconds when NOT locked to GNSS (U4).
-pub const KEY_TP_PERIOD_TP1: u32  = 0x40510002;
-/// TP1 pulse-length in nanoseconds when NOT locked to GNSS (U4).
-pub const KEY_TP_LEN_TP1: u32     = 0x40510003;
+pub const KEY_TP_POL_TP1: u32         = 0x1005000b;
+/// Pulse-length interpretation: 0 = duty-cycle ratio, 1 = absolute length in µs.
+pub const KEY_TP_PULSE_LENGTH_DEF: u32 = 0x20050030;
 /// MON-VER (receiver version) message ID.
 pub const ID_MON_VER: u8 = 0x04;
 /// ACK-ACK message ID.
@@ -76,46 +82,51 @@ impl CfgRate {
     }
 }
 
-/// `UBX-CFG-VALSET` — set timepulse period and pulse-length via the key-value interface.
+/// `UBX-CFG-VALSET` — set TP1 period (unlocked + locked) in µs.
 ///
-/// Encodes a single 28-byte frame containing two U4 key-value pairs:
-/// `CFG-TP-PERIOD_TP1` and `CFG-TP-LEN_TP1`. Both values are in nanoseconds.
-///
-/// Safe to send on Apollo3 IOM I2C (frame ≤ 32 bytes).
-pub fn encode_tp_timing(period_ns: u32, pulse_len_ns: u32, out: &mut [u8]) -> usize {
+/// 28-byte frame, safe for Apollo3 IOM I2C FIFO.
+pub fn encode_tp_period(interval_us: u32, out: &mut [u8]) -> usize {
     let mut payload = [0u8; 20];
-    // VALSET header: version=0 (RAM), layers=0x01 (RAM only), reserved
-    payload[0] = 0x00;
-    payload[1] = 0x01;
-    payload[2] = 0x00;
-    payload[3] = 0x00;
-    // KEY_TP_PERIOD_TP1 + value
+    payload[0] = 0x00; // version: set in RAM
+    payload[1] = 0x01; // layers: RAM
     payload[4..8].copy_from_slice(&KEY_TP_PERIOD_TP1.to_le_bytes());
-    payload[8..12].copy_from_slice(&period_ns.to_le_bytes());
-    // KEY_TP_LEN_TP1 + value
-    payload[12..16].copy_from_slice(&KEY_TP_LEN_TP1.to_le_bytes());
-    payload[16..20].copy_from_slice(&pulse_len_ns.to_le_bytes());
+    payload[8..12].copy_from_slice(&interval_us.to_le_bytes());
+    payload[12..16].copy_from_slice(&KEY_TP_PERIOD_LOCK_TP1.to_le_bytes());
+    payload[16..20].copy_from_slice(&interval_us.to_le_bytes());
     encode_ubx(CLASS_CFG, ID_CFG_VALSET, &payload, out)
 }
 
-/// `UBX-CFG-VALSET` — enable TP1 output and set rising-edge polarity.
+/// `UBX-CFG-VALSET` — set TP1 pulse length (unlocked + locked) in µs.
 ///
-/// Encodes a single 22-byte frame containing two U1 key-value pairs:
-/// `CFG-TP-TP1_ENA` = 1 and `CFG-TP-POL_TP1` = 1 (rising edge).
+/// 28-byte frame, safe for Apollo3 IOM I2C FIFO.
+pub fn encode_tp_len(pulse_len_us: u32, out: &mut [u8]) -> usize {
+    let mut payload = [0u8; 20];
+    payload[0] = 0x00;
+    payload[1] = 0x01;
+    payload[4..8].copy_from_slice(&KEY_TP_LEN_TP1.to_le_bytes());
+    payload[8..12].copy_from_slice(&pulse_len_us.to_le_bytes());
+    payload[12..16].copy_from_slice(&KEY_TP_LEN_LOCK_TP1.to_le_bytes());
+    payload[16..20].copy_from_slice(&pulse_len_us.to_le_bytes());
+    encode_ubx(CLASS_CFG, ID_CFG_VALSET, &payload, out)
+}
+
+/// `UBX-CFG-VALSET` — enable TP1, set rising-edge polarity, and configure
+/// absolute pulse length mode (not duty-cycle ratio).
 ///
-/// Safe to send on Apollo3 IOM I2C (frame ≤ 32 bytes).
+/// 27-byte frame, safe for Apollo3 IOM I2C FIFO.
 pub fn encode_tp_enable(out: &mut [u8]) -> usize {
-    let mut payload = [0u8; 14];
-    payload[0] = 0x00; // version
-    payload[1] = 0x01; // layers: RAM
-    payload[2] = 0x00;
-    payload[3] = 0x00;
-    // KEY_TP_TP1_ENA = 1
+    let mut payload = [0u8; 19];
+    payload[0] = 0x00;
+    payload[1] = 0x01;
+    // TP1_ENA = 1
     payload[4..8].copy_from_slice(&KEY_TP_TP1_ENA.to_le_bytes());
     payload[8] = 1;
-    // KEY_TP_POL_TP1 = 1 (rising edge)
+    // POL_TP1 = 1 (rising edge)
     payload[9..13].copy_from_slice(&KEY_TP_POL_TP1.to_le_bytes());
     payload[13] = 1;
+    // PULSE_LENGTH_DEF = 1 (interpret LEN as µs, not ratio)
+    payload[14..18].copy_from_slice(&KEY_TP_PULSE_LENGTH_DEF.to_le_bytes());
+    payload[18] = 1;
     encode_ubx(CLASS_CFG, ID_CFG_VALSET, &payload, out)
 }
 

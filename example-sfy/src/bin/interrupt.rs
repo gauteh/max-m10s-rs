@@ -120,8 +120,8 @@ fn main() -> ! {
 
     gnss.set_output_rate(&mut i2c, 1).unwrap();
     // Configure PPS: 1 Hz period, 100 ms pulse, rising edge on TS pin.
-    // Uses CFG-VALSET (nanoseconds) split across two ≤32-byte I2C frames.
-    match gnss.set_pps_rate(&mut i2c, 1_000_000_000, 100_000_000) {
+    // Uses CFG-VALSET split across three ≤32-byte I2C frames.
+    match gnss.set_pps_rate(&mut i2c, 1_000_000, 100_000) {
         Ok(()) => defmt::info!("PPS configured: 1 Hz, 100 ms pulse"),
         Err(e) => defmt::warn!("set_pps_rate failed: {:?}", defmt::Debug2Format(&e)),
     }
