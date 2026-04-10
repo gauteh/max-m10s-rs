@@ -44,7 +44,9 @@ const REG_BYTES_AVAIL: u8 = 0xFD;
 /// Maximum bytes per I2C read transaction (matches u-blox recommended chunk size).
 const CHUNK: usize = 32;
 
-/// Internal receive buffer — matches the u-blox DDC FIFO size (512 bytes).
+/// Internal receive buffer.  The MAX-M10S DDC output FIFO is 4096 bytes
+/// (≈ 40 NAV-PVT messages at 100 bytes each).  We drain in 512-byte chunks
+/// so that each `read_all_pvts` call stays short enough for ISR use.
 const RX_BUF: usize = 512;
 
 /// Outcome of a [`MaxM10S::drain`] call.
