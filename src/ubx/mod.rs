@@ -238,16 +238,24 @@ pub struct NavPvt {
 /// Scan `buf` for the first valid `UBX-NAV-PVT` packet and return the parsed
 /// position/time. Returns `None` if no complete, checksum-valid NAV-PVT is found.
 pub fn parse_nav_pvt(buf: &[u8]) -> Option<NavPvt> {
+    let mut out = None;
+    iter_nav_pvts(buf, &mut |pvt| { out = Some(pvt); });
+    out
+}
+
+/// Scan `buf` and call `f` once for every valid `UBX-NAV-PVT` packet found.
+/// Non-NAV-PVT UBX messages and non-UBX bytes are skipped.
+pub fn iter_nav_pvts<F: FnMut(NavPvt)>(buf: &[u8], f: &mut F) {
     let mut i = 0;
     while i + 6 <= buf.len() {
         if buf[i] != SYNC1 || buf[i + 1] != SYNC2 {
             i += 1;
             continue;
         }
-        let pkt_cls = *buf.get(i + 2)?;
-        let pkt_id = *buf.get(i + 3)?;
-        let pkt_len =
-            u16::from_le_bytes([*buf.get(i + 4)?, *buf.get(i + 5)?]) as usize;
+        let Some(pkt_cls) = buf.get(i + 2).copied() else { break };
+        let Some(pkt_id)  = buf.get(i + 3).copied() else { break };
+        let (Some(&lo), Some(&hi)) = (buf.get(i + 4), buf.get(i + 5)) else { break };
+        let pkt_len = u16::from_le_bytes([lo, hi]) as usize;
         let total = 6 + pkt_len + 2;
 
         if pkt_cls != CLASS_NAV || pkt_id != ID_NAV_PVT {
@@ -255,41 +263,43 @@ pub fn parse_nav_pvt(buf: &[u8]) -> Option<NavPvt> {
             continue;
         }
         if i + total > buf.len() || pkt_len < 92 {
-            return None;
+            // Incomplete packet at end of buffer — stop scanning.
+            break;
         }
 
-        let payload = buf.get(i + 6..i + 6 + pkt_len)?;
+        let payload = &buf[i + 6..i + 6 + pkt_len];
         let (ck_a, ck_b) = checksum(pkt_cls, pkt_id, payload);
-        if ck_a != *buf.get(i + 6 + pkt_len)? || ck_b != *buf.get(i + 6 + pkt_len + 1)? {
+        if ck_a != buf[i + 6 + pkt_len] || ck_b != buf[i + 6 + pkt_len + 1] {
             i += 1;
             continue;
         }
 
-        return Some(NavPvt {
-            year:          u16::from_le_bytes(payload.get(4..6)?.try_into().ok()?),
-            month:         *payload.get(6)?,
-            day:           *payload.get(7)?,
-            hour:          *payload.get(8)?,
-            min:           *payload.get(9)?,
-            sec:           *payload.get(10)?,
-            valid:         *payload.get(11)?,
-            t_acc_ns:      u32::from_le_bytes(payload.get(12..16)?.try_into().ok()?),
-            nano:          i32::from_le_bytes(payload.get(16..20)?.try_into().ok()?),
-            fix_type:      *payload.get(20)?,
-            flags:         *payload.get(21)?,
-            num_sv:        *payload.get(23)?,
-            lon:           i32::from_le_bytes(payload.get(24..28)?.try_into().ok()?),
-            lat:           i32::from_le_bytes(payload.get(28..32)?.try_into().ok()?),
-            height_msl_mm: i32::from_le_bytes(payload.get(36..40)?.try_into().ok()?),
-            h_acc_mm:      u32::from_le_bytes(payload.get(40..44)?.try_into().ok()?),
-            v_acc_mm:      u32::from_le_bytes(payload.get(44..48)?.try_into().ok()?),
-            vel_n_mm_s:    i32::from_le_bytes(payload.get(48..52)?.try_into().ok()?),
-            vel_e_mm_s:    i32::from_le_bytes(payload.get(52..56)?.try_into().ok()?),
-            vel_d_mm_s:    i32::from_le_bytes(payload.get(56..60)?.try_into().ok()?),
-            s_acc_mm_s:    u32::from_le_bytes(payload.get(68..72)?.try_into().ok()?),
-        });
+        let pvt = NavPvt {
+            year:          u16::from_le_bytes(payload[4..6].try_into().unwrap()),
+            month:         payload[6],
+            day:           payload[7],
+            hour:          payload[8],
+            min:           payload[9],
+            sec:           payload[10],
+            valid:         payload[11],
+            t_acc_ns:      u32::from_le_bytes(payload[12..16].try_into().unwrap()),
+            nano:          i32::from_le_bytes(payload[16..20].try_into().unwrap()),
+            fix_type:      payload[20],
+            flags:         payload[21],
+            num_sv:        payload[23],
+            lon:           i32::from_le_bytes(payload[24..28].try_into().unwrap()),
+            lat:           i32::from_le_bytes(payload[28..32].try_into().unwrap()),
+            height_msl_mm: i32::from_le_bytes(payload[36..40].try_into().unwrap()),
+            h_acc_mm:      u32::from_le_bytes(payload[40..44].try_into().unwrap()),
+            v_acc_mm:      u32::from_le_bytes(payload[44..48].try_into().unwrap()),
+            vel_n_mm_s:    i32::from_le_bytes(payload[48..52].try_into().unwrap()),
+            vel_e_mm_s:    i32::from_le_bytes(payload[52..56].try_into().unwrap()),
+            vel_d_mm_s:    i32::from_le_bytes(payload[56..60].try_into().unwrap()),
+            s_acc_mm_s:    u32::from_le_bytes(payload[68..72].try_into().unwrap()),
+        };
+        f(pvt);
+        i += total;
     }
-    None
 }
 
 // -------------------------------------------------------------------------

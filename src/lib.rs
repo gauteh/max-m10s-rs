@@ -26,7 +26,7 @@
 pub mod ubx;
 
 use ubx::{
-    encode_ubx, parse_nav_pvt, parse_ubx_response, CfgMsg, CfgRate, RxmPmReq,
+    encode_ubx, parse_nav_pvt, iter_nav_pvts, parse_ubx_response, CfgMsg, CfgRate, RxmPmReq,
     encode_tp_period, encode_tp_len, encode_tp_enable,
     NavPvt, ParseError, CLASS_CFG, CLASS_MON, CLASS_NAV,
     ID_CFG_RATE, ID_CFG_VALSET, ID_CFG_MSG, ID_MON_VER, ID_NAV_PVT,
@@ -206,6 +206,44 @@ impl MaxM10S {
         match self.drain(i2c, &mut rx)? {
             DrainResult::Data(n) => Ok(parse_nav_pvt(&rx[..n])),
             DrainResult::NothingReady | DrainResult::NotInitialized => Ok(None),
+        }
+    }
+
+    /// Drain one chunk (up to 512 bytes) from the device FIFO and call `f` for
+    /// every valid `UBX-NAV-PVT` packet found in that chunk.
+    ///
+    /// Returns `Ok(true)` if the FIFO had data (even if no NAV-PVT was parsed),
+    /// `Ok(false)` when the FIFO is empty or the device is not yet initialised.
+    ///
+    /// Call in a loop until it returns `Ok(false)` to fully drain the FIFO:
+    ///
+    /// ```no_run
+    /// # fn run<I2C, E: core::fmt::Debug>(mut i2c: I2C, mut gnss: max_m10s::MaxM10S)
+    /// # where I2C: embedded_hal::blocking::i2c::Read<Error=E>
+    /// #          + embedded_hal::blocking::i2c::Write<Error=E>
+    /// #          + embedded_hal::blocking::i2c::WriteRead<Error=E> {
+    /// while gnss.read_all_pvts(&mut i2c, &mut |pvt| {
+    ///     // process pvt
+    ///     let _ = pvt;
+    /// }).unwrap_or(false) {}
+    /// # }
+    /// ```
+    pub fn read_all_pvts<I2C, E, F>(
+        &mut self,
+        i2c: &mut I2C,
+        f: &mut F,
+    ) -> Result<bool, Error<E>>
+    where
+        I2C: Read<Error = E> + WriteRead<Error = E>,
+        F: FnMut(NavPvt),
+    {
+        let mut rx = [0u8; RX_BUF];
+        match self.drain(i2c, &mut rx)? {
+            DrainResult::Data(n) => {
+                iter_nav_pvts(&rx[..n], f);
+                Ok(true)
+            }
+            DrainResult::NothingReady | DrainResult::NotInitialized => Ok(false),
         }
     }
 
