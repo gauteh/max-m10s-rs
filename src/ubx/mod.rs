@@ -49,6 +49,21 @@ pub const ID_NAV_PVT: u8 = 0x07;
 /// RXM-PMREQ (power management request / sleep) message ID.
 pub const ID_RXM_PMREQ: u8 = 0x41;
 
+// CFG-VALSET key IDs for the GNSS signal configuration (CFG-SIGNAL group = 0x0031).
+// All are type L1 (boolean, 1 byte).  Reference: M10 Interface Description UBX-21035062.
+/// Enable GPS constellation (L1).
+pub const KEY_SIGNAL_GPS_ENA: u32  = 0x1031001F;
+/// Enable SBAS (L1).
+pub const KEY_SIGNAL_SBAS_ENA: u32 = 0x10310020;
+/// Enable Galileo constellation (L1).
+pub const KEY_SIGNAL_GAL_ENA: u32  = 0x10310021;
+/// Enable BeiDou constellation (L1).
+pub const KEY_SIGNAL_BDS_ENA: u32  = 0x10310022;
+/// Enable QZSS constellation (L1).
+pub const KEY_SIGNAL_QZSS_ENA: u32 = 0x10310024;
+/// Enable GLONASS constellation (L1).
+pub const KEY_SIGNAL_GLO_ENA: u32  = 0x10310025;
+
 /// UBX sync characters.
 const SYNC1: u8 = 0xB5;
 const SYNC2: u8 = 0x62;
@@ -130,7 +145,48 @@ pub fn encode_tp_enable(out: &mut [u8]) -> usize {
     encode_ubx(CLASS_CFG, ID_CFG_VALSET, &payload, out)
 }
 
-/// `UBX-CFG-MSG` — enable or disable a message on a specific port.
+/// `UBX-CFG-VALSET` — disable SBAS, Galileo, BeiDou (first frame).
+///
+/// 27-byte frame, safe for Apollo3 IOM I2C FIFO (≤ 32 bytes).
+/// Together with `encode_signal_gps_only_2` this restricts the receiver to
+/// GPS-only mode, which is required for reliable 25 Hz navigation output.
+pub fn encode_signal_gps_only_1(out: &mut [u8]) -> usize {
+    let mut payload = [0u8; 19];
+    payload[0] = 0x00; // version
+    payload[1] = 0x01; // layers: RAM
+    // GPS_ENA = 1
+    payload[4..8].copy_from_slice(&KEY_SIGNAL_GPS_ENA.to_le_bytes());
+    payload[8] = 1;
+    // SBAS_ENA = 0
+    payload[9..13].copy_from_slice(&KEY_SIGNAL_SBAS_ENA.to_le_bytes());
+    payload[13] = 0;
+    // GAL_ENA = 0
+    payload[14..18].copy_from_slice(&KEY_SIGNAL_GAL_ENA.to_le_bytes());
+    payload[18] = 0;
+    encode_ubx(CLASS_CFG, ID_CFG_VALSET, &payload, out)
+}
+
+/// `UBX-CFG-VALSET` — disable BeiDou, QZSS, GLONASS (second frame).
+///
+/// 27-byte frame, safe for Apollo3 IOM I2C FIFO (≤ 32 bytes).
+pub fn encode_signal_gps_only_2(out: &mut [u8]) -> usize {
+    let mut payload = [0u8; 19];
+    payload[0] = 0x00;
+    payload[1] = 0x01;
+    // BDS_ENA = 0
+    payload[4..8].copy_from_slice(&KEY_SIGNAL_BDS_ENA.to_le_bytes());
+    payload[8] = 0;
+    // QZSS_ENA = 0
+    payload[9..13].copy_from_slice(&KEY_SIGNAL_QZSS_ENA.to_le_bytes());
+    payload[13] = 0;
+    // GLO_ENA = 0
+    payload[14..18].copy_from_slice(&KEY_SIGNAL_GLO_ENA.to_le_bytes());
+    payload[18] = 0;
+    encode_ubx(CLASS_CFG, ID_CFG_VALSET, &payload, out)
+}
+
+
+/// Configuration for a UBX message output rate on DDC (I2C).
 pub struct CfgMsg {
     /// Message class to configure.
     pub msg_class: u8,

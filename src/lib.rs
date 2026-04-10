@@ -28,6 +28,7 @@ pub mod ubx;
 use ubx::{
     encode_ubx, parse_nav_pvt, iter_nav_pvts, parse_ubx_response, CfgMsg, CfgRate, RxmPmReq,
     encode_tp_period, encode_tp_len, encode_tp_enable,
+    encode_signal_gps_only_1, encode_signal_gps_only_2,
     NavPvt, ParseError, CLASS_CFG, CLASS_MON, CLASS_NAV,
     ID_CFG_RATE, ID_CFG_VALSET, ID_CFG_MSG, ID_MON_VER, ID_NAV_PVT,
 };
@@ -162,6 +163,30 @@ impl MaxM10S {
         let n = msg.encode(&mut buf);
         i2c.write(self.address, &buf[..n])?;
         self.wait_ack(i2c, CLASS_CFG, ID_CFG_MSG)
+    }
+
+    /// Restrict the receiver to GPS-only mode.
+    ///
+    /// The MAX-M10S can only sustain 25 Hz navigation output when a single
+    /// GNSS constellation is enabled.  With multiple constellations active
+    /// (the factory default) the maximum reliable rate drops to ~10 Hz.
+    ///
+    /// Sends two CFG-VALSET frames (27 bytes each, within Apollo3 FIFO limit):
+    /// - Frame 1: GPS_ENA=1, SBAS_ENA=0, GAL_ENA=0
+    /// - Frame 2: BDS_ENA=0, QZSS_ENA=0, GLO_ENA=0
+    pub fn set_single_gnss_gps<I2C, E>(&mut self, i2c: &mut I2C) -> Result<(), Error<E>>
+    where
+        I2C: Write<Error = E> + Read<Error = E> + WriteRead<Error = E>,
+    {
+        let mut buf = [0u8; 32];
+
+        let n = encode_signal_gps_only_1(&mut buf);
+        i2c.write(self.address, &buf[..n])?;
+        self.wait_ack(i2c, CLASS_CFG, ID_CFG_VALSET)?;
+
+        let n = encode_signal_gps_only_2(&mut buf);
+        i2c.write(self.address, &buf[..n])?;
+        self.wait_ack(i2c, CLASS_CFG, ID_CFG_VALSET)
     }
 
     /// Send the device into indefinite backup sleep (`UBX-RXM-PMREQ`).
