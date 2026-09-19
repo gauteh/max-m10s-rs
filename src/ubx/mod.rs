@@ -48,6 +48,8 @@ pub const ID_ACK_NAK: u8 = 0x00;
 pub const ID_NAV_PVT: u8 = 0x07;
 /// RXM-PMREQ (power management request / sleep) message ID.
 pub const ID_RXM_PMREQ: u8 = 0x41;
+/// CFG-RST (reset) message ID.
+pub const ID_CFG_RST: u8 = 0x04;
 
 // CFG-VALSET key IDs for the GNSS signal configuration (CFG-SIGNAL group = 0x0031).
 // All are type L1 (boolean, 1 byte).  Reference: M10 Interface Description UBX-21035062.
@@ -234,6 +236,53 @@ impl RxmPmReq {
         // flags: bit 1 = backup
         payload[4..8].copy_from_slice(&2u32.to_le_bytes());
         encode_ubx(CLASS_RXM, ID_RXM_PMREQ, &payload, out)
+    }
+}
+
+/// `UBX-CFG-RST` — reset the receiver.
+///
+/// Used to force the navigation engine to restart cleanly (e.g. after a
+/// suspected wedged/stuck state) without necessarily clearing the backup
+/// data (ephemeris/almanac/position/time) that lets subsequent fixes be
+/// warm/hot rather than cold.
+pub struct CfgRst {
+    /// Which backup data sets (if any) to clear. `0x0000` keeps everything
+    /// (hot start); `0xFFFF` clears everything (cold start). See the
+    /// `nav_bbr_mask_*` constants below for the individual bits.
+    pub nav_bbr_mask: u16,
+    /// Reset mode -- see the `reset_mode_*` constants below.
+    pub reset_mode: u8,
+}
+
+/// `navBbrMask`: keep all backup data (hot start).
+pub const NAV_BBR_MASK_HOT_START: u16 = 0x0000;
+/// `navBbrMask`: clear all backup data (cold start).
+pub const NAV_BBR_MASK_COLD_START: u16 = 0xFFFF;
+
+/// `resetMode`: restart the GNSS engine only, leaving the receiver's
+/// communication interfaces (and thus this I2C session) intact -- no
+/// device re-probe/re-init is needed afterwards.
+pub const RESET_MODE_GNSS_ONLY: u8 = 0x02;
+
+impl CfgRst {
+    /// A hot-start GNSS-only restart: forces the navigation engine to
+    /// restart from scratch while keeping ephemeris/almanac/position/time
+    /// backup data intact (so re-acquisition can still be warm/hot) and
+    /// without dropping the I2C/communication session.
+    pub fn hot_start_gnss_only() -> Self {
+        Self {
+            nav_bbr_mask: NAV_BBR_MASK_HOT_START,
+            reset_mode: RESET_MODE_GNSS_ONLY,
+        }
+    }
+
+    /// Encode into `out`. Returns the number of bytes written.
+    pub fn encode(&self, out: &mut [u8]) -> usize {
+        let mut payload = [0u8; 4];
+        payload[0..2].copy_from_slice(&self.nav_bbr_mask.to_le_bytes());
+        payload[2] = self.reset_mode;
+        payload[3] = 0x00; // reserved
+        encode_ubx(CLASS_CFG, ID_CFG_RST, &payload, out)
     }
 }
 

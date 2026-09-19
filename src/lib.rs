@@ -26,7 +26,7 @@
 pub mod ubx;
 
 use ubx::{
-    encode_ubx, parse_nav_pvt, iter_nav_pvts, parse_ubx_response, CfgMsg, CfgRate, RxmPmReq,
+    encode_ubx, parse_nav_pvt, iter_nav_pvts, parse_ubx_response, CfgMsg, CfgRate, CfgRst, RxmPmReq,
     encode_tp_period, encode_tp_len, encode_tp_enable,
     encode_signal_gps_only_1, encode_signal_gps_only_2,
     NavPvt, ParseError, CLASS_CFG, CLASS_MON, CLASS_NAV,
@@ -105,6 +105,31 @@ impl MaxM10S {
         let n = encode_ubx(CLASS_MON, ID_MON_VER, &[], &mut buf);
         i2c.write(self.address, &buf[..n])?;
         self.wait_ack(i2c, CLASS_MON, ID_MON_VER)
+    }
+
+    /// Force the navigation engine to restart cleanly (`UBX-CFG-RST`,
+    /// GNSS-only hot start) without clearing backup data (ephemeris/
+    /// almanac/position/time) and without dropping the I2C/communication
+    /// session -- useful when a receiver keeps ACKing configuration
+    /// commands (so it isn't actually dead) but never produces a fix,
+    /// which suggests its nav engine may have come up in a wedged state
+    /// after a power cycle rather than there being a genuine reception
+    /// problem.
+    ///
+    /// `UBX-CFG-RST` does not return a `UBX-ACK-ACK`/`UBX-ACK-NAK`
+    /// response (per the u-blox interface spec), so this can't be
+    /// verified the way other config commands are -- call `init` (which
+    /// does wait for a response) afterwards to confirm the receiver is
+    /// back and responsive.
+    pub fn reset<I2C, E>(&mut self, i2c: &mut I2C) -> Result<(), Error<E>>
+    where
+        I2C: Write<Error = E>,
+    {
+        let req = CfgRst::hot_start_gnss_only();
+        let mut buf = [0u8; 8];
+        let n = req.encode(&mut buf);
+        i2c.write(self.address, &buf[..n])?;
+        Ok(())
     }
 
     /// Set the navigation measurement rate.
