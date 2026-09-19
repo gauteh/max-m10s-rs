@@ -126,7 +126,7 @@ impl MaxM10S {
         I2C: Write<Error = E>,
     {
         let req = CfgRst::hot_start_gnss_only();
-        let mut buf = [0u8; 8];
+        let mut buf = [0u8; 12]; // encode_ubx needs 8 + payload.len() (4)
         let n = req.encode(&mut buf);
         i2c.write(self.address, &buf[..n])?;
         Ok(())
